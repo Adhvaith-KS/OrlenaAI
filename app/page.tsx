@@ -119,10 +119,14 @@ export default function Home() {
             Orlena AI
           </motion.h1>
 
+          <motion.p
+            variants={fadeInUp as any}
+            className="text-2xl md:text-4xl text-indigo-100/90 font-light italic leading-relaxed tracking-tight mt-4"
+          >
+            &quot;Language barrier&quot; in the big 2026 is crazy.
+          </motion.p>
+
           <motion.div variants={fadeInUp as any} className="space-y-6">
-            <p className="text-xl md:text-3xl text-indigo-200/90 font-light leading-relaxed tracking-tight">
-              &quot;Language barrier&quot; in the big 2026 is crazy.
-            </p>
             <p className="text-zinc-400 max-w-2xl mx-auto leading-relaxed text-lg">
               Welcome to your universal translation layer for real conversations. Orlena understands and converses in all Indian languages, and speaks FOR you to the other person. Dissolve boundaries and communicate without limits anytime and anywhere.
             </p>
@@ -131,8 +135,8 @@ export default function Home() {
 
         {/* Action Panel */}
         <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6, duration: 0.5 }}
           className="flex flex-col gap-6 max-w-sm mx-auto w-full pt-8"
         >
@@ -158,20 +162,20 @@ export default function Home() {
           </div>
 
           <div className="grid grid-cols-2 gap-3 pb-2">
-            {(Object.values(TTS_MODELS)).map((model) => (
+            {(Object.values(TTS_MODELS)).map((m) => (
               <button
-                key={model.id}
-                onClick={() => setSelectedModel(model.id as TTSModelId)}
-                className={`flex flex-col items-start p-3 rounded-xl border transition-all text-left ${selectedModel === model.id
+                key={m.id}
+                onClick={() => setSelectedModel(m.id as TTSModelId)}
+                className={`flex flex-col items-start p-3 rounded-xl border transition-all text-left ${selectedModel === m.id
                   ? 'bg-indigo-600/10 border-indigo-500 shadow-[0_0_15px_rgba(99,102,241,0.2)]'
                   : 'bg-white/5 border-white/10 hover:border-white/20'
                   }`}
               >
                 <div className="flex items-center gap-2 mb-1">
-                  <div className={`w-2 h-2 rounded-full ${selectedModel === model.id ? 'bg-indigo-400' : 'bg-zinc-600'}`} />
-                  <span className="font-bold text-sm tracking-tight">{model.name}</span>
+                  <div className={`w-2 h-2 rounded-full ${selectedModel === m.id ? 'bg-indigo-400' : 'bg-zinc-600'}`} />
+                  <span className="font-bold text-sm tracking-tight">{m.name}</span>
                 </div>
-                <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{model.subtitle}</span>
+                <span className="text-[10px] uppercase tracking-wider text-zinc-500 font-bold">{m.subtitle}</span>
               </button>
             ))}
           </div>
@@ -210,9 +214,17 @@ export default function Home() {
           transition={{ duration: 0.8 }}
           className="pt-32 space-y-16 border-t border-white/5 text-center"
         >
+          <div className="flex items-center justify-center gap-8 text-[10px] uppercase tracking-[0.3em] font-bold text-zinc-600">
+            <span className="flex items-center gap-2"><Globe className="w-3 h-3 translate-y-[-1px]" /> Universal Translation</span>
+            <span className="opacity-30">|</span>
+            <span>Real-time Voice</span>
+            <span className="opacity-30">|</span>
+            <span>Zero Latency</span>
+          </div>
+
           <div className="space-y-6">
             <h2 className="text-4xl md:text-5xl font-bold font-syne tracking-tight text-white/90 uppercase">
-              Breaking the final barrier.
+              Breaking the final barrier of communication
             </h2>
             <p className="text-lg text-zinc-400 max-w-2xl mx-auto leading-relaxed font-light">
               Orlena AI is your universal translation layer for natural, real-time voice conversations.
@@ -240,13 +252,17 @@ export default function Home() {
           whileInView={{ opacity: 1 }}
           viewport={{ once: true }}
           transition={{ delay: 0.2, duration: 1 }}
-          className="pt-24 pb-12 text-[10px] uppercase tracking-[0.3em] font-bold text-zinc-600 flex items-center justify-center gap-8"
+          className="pt-24 pb-12 flex flex-col items-center gap-6"
         >
-          <span className="flex items-center gap-2"><Globe className="w-3 h-3 translate-y-[-1px]" /> Universal Translation</span>
-          <span className="opacity-30">|</span>
-          <span>Real-time Voice</span>
-          <span className="opacity-30">|</span>
-          <span>Zero Latency</span>
+
+
+          <div className="pt-8 border-t border-white/5 w-full max-w-2xl text-center space-y-3">
+            <p className="text-zinc-500 text-xs tracking-widest uppercase font-medium">Made by Adhvaith</p>
+            <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-[10px] text-zinc-600 tracking-wider">
+              <a href="mailto:adhvaithks@gmail.com" className="hover:text-indigo-400 transition-colors uppercase">Contact: adhvaithks@gmail.com</a>
+              <a href="https://www.linkedin.com/in/adhvaith-ks-066758181/" target="_blank" rel="noopener noreferrer" className="hover:text-indigo-400 transition-colors uppercase">LinkedIn: Adhvaith KS</a>
+            </div>
+          </div>
         </motion.div>
       </div>
     </main>
