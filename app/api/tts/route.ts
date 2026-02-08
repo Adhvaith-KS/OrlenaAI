@@ -1,27 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getVoiceForGender, Gender } from '@/app/config/voices';
-import { TTS_MODELS, TTSModelId } from '@/app/config/models';
+import { getVoiceForGender, Gender } from '../../config/voices';
+import { TTS_MODELS, TTSModelId } from '../../config/models';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+    const NO_CACHE_HEADERS = { 'Cache-Control': 'no-store' };
     try {
         const { text, targetLang, gender, model } = await req.json();
 
         if (!text || !targetLang) {
-            return NextResponse.json({ error: 'Missing text or targetLang' }, { status: 400 });
+            return NextResponse.json({ error: 'Missing fields' }, { status: 400, headers: NO_CACHE_HEADERS });
         }
 
         const apiKey = process.env.SARVAM_API_KEY;
         if (!apiKey) {
-            console.error('SARVAM_API_KEY is missing');
-            return NextResponse.json({ error: 'Server config error' }, { status: 500 });
+            return NextResponse.json({ error: 'Config error' }, { status: 500, headers: NO_CACHE_HEADERS });
         }
 
         const modelId: TTSModelId = model || 'bulbul:v3-beta';
         const modelConfig = TTS_MODELS[modelId] || TTS_MODELS['bulbul:v3-beta'];
-
-        // Get voice based on gender (default to neutral if not provided)
-        const voiceGender: Gender = gender || 'neutral';
-        const speaker = getVoiceForGender(voiceGender, modelId);
+        const speaker = getVoiceForGender(gender || 'neutral', modelId);
 
         const isV3 = modelId.includes('v3');
         const payload: any = {
@@ -31,13 +30,8 @@ export async function POST(req: NextRequest) {
             pace: modelConfig.defaultPace
         };
 
-        if (isV3) {
-            payload.text = text;
-        } else {
-            payload.inputs = [text];
-        }
-
-        console.log(`[TTS] Request Payload (${modelId}):`, JSON.stringify(payload));
+        if (isV3) payload.text = text;
+        else payload.inputs = [text];
 
         const response = await fetch('https://api.sarvam.ai/text-to-speech', {
             method: 'POST',
@@ -49,33 +43,19 @@ export async function POST(req: NextRequest) {
         });
 
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('[TTS] API Error:', response.status, errorText);
-            return NextResponse.json({ error: `Sarvam TTS error: ${response.status}`, details: errorText }, { status: response.status });
+            const err = await response.text();
+            return NextResponse.json({ error: 'TTS Error', details: err }, { status: response.status, headers: NO_CACHE_HEADERS });
         }
 
         const data = await response.json();
-        console.log('[TTS] Full API Response:', JSON.stringify(data, null, 2));
+        const audio = data.audio_content || data.audios?.[0];
 
-        // Bulbul v3 returns 'audio_content', v2 returns 'audios' array
-        const audioBase64 = data.audio_content || data.audios?.[0];
+        if (!audio) return NextResponse.json({ error: 'No audio' }, { status: 500, headers: NO_CACHE_HEADERS });
 
-        if (!audioBase64) {
-            console.error('[TTS] No audio field found in response.');
-            console.error('[TTS] Response keys:', Object.keys(data));
-            console.error('[TTS] Full response:', JSON.stringify(data));
-            return NextResponse.json({
-                error: 'No audio returned',
-                responseKeys: Object.keys(data),
-                fullResponse: data
-            }, { status: 500 });
-        }
+        return NextResponse.json({ audio }, { headers: NO_CACHE_HEADERS });
 
-        console.log('[TTS] Success (Bulbul v3), audio length:', audioBase64.length);
-        return NextResponse.json({ audio: audioBase64 });
-
-    } catch (error) {
-        console.error('[TTS] Internal Error:', error);
-        return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    } catch (error: any) {
+        console.error('[TTS] Error:', error.message);
+        return NextResponse.json({ error: 'Internal Error' }, { status: 500, headers: NO_CACHE_HEADERS });
     }
 }

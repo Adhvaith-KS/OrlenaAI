@@ -26,6 +26,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         fetch('/api/signaling', {
             method: 'POST',
             body: JSON.stringify({ type: 'join', roomId, userId, ttsModel: initialModel }),
+            cache: 'no-store',
         }).then(res => res.json()).then(data => {
             if (data.participants) setParticipants(data.participants);
             if (data.ttsModel) setTtsModel(data.ttsModel);
@@ -33,7 +34,9 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
 
         const interval = setInterval(async () => {
             try {
-                const res = await fetch(`/api/signaling?roomId=${roomId}&userId=${userId}`);
+                const res = await fetch(`/api/signaling?roomId=${roomId}&userId=${userId}`, {
+                    cache: 'no-store'
+                });
                 const data = await res.json();
 
                 if (data.participants) {
@@ -196,6 +199,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         fetch('/api/signaling', {
             method: 'POST',
             body: JSON.stringify({ type, roomId, userId, targetId, data }),
+            cache: 'no-store',
         });
     };
 

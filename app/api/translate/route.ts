@@ -1,27 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
+    const NO_CACHE_HEADERS = { 'Cache-Control': 'no-store' };
     try {
         const { text, sourceLang, targetLang } = await req.json();
 
         if (!text || !sourceLang || !targetLang) {
-            return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+            return NextResponse.json({ error: 'Missing fields' }, { status: 400, headers: NO_CACHE_HEADERS });
         }
 
         const apiKey = process.env.SARVAM_API_KEY;
         if (!apiKey) {
-            console.error('SARVAM_API_KEY is missing');
-            return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+            return NextResponse.json({ error: 'Config error' }, { status: 500, headers: NO_CACHE_HEADERS });
         }
-
-        const payload = {
-            input: text,
-            source_language_code: sourceLang,
-            target_language_code: targetLang,
-            model: 'sarvam-translate:v1' // Switch to flagship model
-        };
-
-        console.log('[TRANSLATE] Request Payload:', JSON.stringify(payload));
 
         const response = await fetch('https://api.sarvam.ai/translate', {
             method: 'POST',
@@ -29,22 +22,24 @@ export async function POST(req: NextRequest) {
                 'Content-Type': 'application/json',
                 'api-subscription-key': apiKey,
             },
-            body: JSON.stringify(payload),
+            body: JSON.stringify({
+                input: text,
+                source_language_code: sourceLang,
+                target_language_code: targetLang,
+                model: 'sarvam-translate:v1'
+            }),
         });
 
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error('[TRANSLATE] API Error:', response.status, errorText);
-            return NextResponse.json({ error: `Sarvam API error: ${response.status}`, details: errorText }, { status: response.status });
+            const err = await response.text();
+            return NextResponse.json({ error: 'API Error', details: err }, { status: response.status, headers: NO_CACHE_HEADERS });
         }
 
         const data = await response.json();
-        console.log('[TRANSLATE] Success Response:', JSON.stringify(data));
+        return NextResponse.json({ translated_text: data.translated_text }, { headers: NO_CACHE_HEADERS });
 
-        return NextResponse.json({ translated_text: data.translated_text });
-
-    } catch (error) {
-        console.error('[TRANSLATE] Handler Error:', error);
-        return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    } catch (error: any) {
+        console.error('[TRANSLATE] Error:', error.message);
+        return NextResponse.json({ error: 'Internal Error' }, { status: 500, headers: NO_CACHE_HEADERS });
     }
 }

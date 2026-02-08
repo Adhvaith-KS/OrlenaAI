@@ -1,57 +1,43 @@
-
 import { NextRequest, NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(req: NextRequest) {
+    const NO_CACHE_HEADERS = { 'Cache-Control': 'no-store' };
     try {
         const formData = await req.formData();
         const file = formData.get('audio');
 
         if (!file) {
-            return NextResponse.json({ error: 'No audio file provided' }, { status: 400 });
+            return NextResponse.json({ error: 'No audio file provided' }, { status: 400, headers: NO_CACHE_HEADERS });
         }
 
         const apiKey = process.env.SARVAM_API_KEY;
         if (!apiKey) {
-            console.error('SARVAM_API_KEY is missing');
-            return NextResponse.json({ error: 'Server configuration error' }, { status: 500 });
+            console.error('[STT] Missing API Key');
+            return NextResponse.json({ error: 'Config error' }, { status: 500, headers: NO_CACHE_HEADERS });
         }
 
-        // Prepare FormData for Sarvam API
         const apiFormData = new FormData();
-        apiFormData.append('file', file); // Sarvam expects 'file'
-        apiFormData.append('model', 'saarika:v2.5'); // Valid models: saarika:v2.5, saaras:v3
-        // apiFormData.append('language_code', 'en-IN'); // Optional, implicit detection usually works
-
-
-        console.log('Sending request to Sarvam API...');
+        apiFormData.append('file', file);
+        apiFormData.append('model', 'saarika:v2.5');
 
         const response = await fetch('https://api.sarvam.ai/speech-to-text', {
             method: 'POST',
-            headers: {
-                'api-subscription-key': apiKey,
-                // Do NOT set 'Content-Type': 'multipart/form-data' manually with fetch + FormData, 
-                // let the browser/node set it with boundary.
-            },
+            headers: { 'api-subscription-key': apiKey },
             body: apiFormData,
         });
 
         if (!response.ok) {
             const errorText = await response.text();
-            console.error('Sarvam API Error Response:', response.status, errorText);
-            return NextResponse.json({
-                error: `Sarvam API error: ${response.statusText}`,
-                details: errorText
-            }, { status: response.status });
+            return NextResponse.json({ error: 'Sarvam API error', details: errorText }, { status: response.status, headers: NO_CACHE_HEADERS });
         }
 
         const data = await response.json();
-        console.log('Sarvam API Success:', data);
+        return NextResponse.json(data, { headers: NO_CACHE_HEADERS });
 
-        // Sarvam usually returns { "transcript": "..." }
-        return NextResponse.json(data);
-
-    } catch (error) {
-        console.error('STT API Error:', error);
-        return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    } catch (error: any) {
+        console.error('[STT] Handler Error:', error.message);
+        return NextResponse.json({ error: 'Internal Error' }, { status: 500, headers: NO_CACHE_HEADERS });
     }
 }
