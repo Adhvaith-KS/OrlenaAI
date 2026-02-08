@@ -17,6 +17,15 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const [lastTranscript, setLastTranscript] = useState<{ text: string; sender: 'me' | 'remote'; language?: string } | null>(null);
     const [remoteProfile, setRemoteProfile] = useState<{ name: string; avatar: string; gender?: string } | null>(null);
     const [ttsModel, setTtsModel] = useState<string>(initialModel || 'bulbul:v3-beta');
+    const localStream = useRef<MediaStream | null>(null);
+    const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    // Initialize remote audio element once
+    useEffect(() => {
+        const audio = new Audio();
+        audio.autoplay = true;
+        remoteAudioRef.current = audio;
+    }, []);
 
     // Firebase Signaling
     useEffect(() => {
@@ -24,24 +33,24 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
 
         console.log(`[FIREBASE] Joining room: ${roomId} as ${userId}`);
 
-        const roomRef = ref(db, `rooms/${roomId}`);
         const participantsRef = ref(db, `rooms/${roomId}/participants`);
         const myParticipantRef = ref(db, `rooms/${roomId}/participants/${userId}`);
         const offerRef = ref(db, `rooms/${roomId}/offer`);
         const answerRef = ref(db, `rooms/${roomId}/answer`);
         const myCandidatesRef = ref(db, `rooms/${roomId}/candidates/${userId}`);
 
-        // 1. Join & Presence
-        set(myParticipantRef, true);
+        // 1. Join & Presence (Join with timestamp to determine role)
+        set(myParticipantRef, Date.now());
         onDisconnect(myParticipantRef).remove();
 
         // 2. Sync Participants
         const unsubParticipants = onValue(participantsRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
-                const plist = Object.keys(data);
-                console.log('[FIREBASE] Participants updated:', plist);
-                setParticipants(plist);
+                // Sort by join time to establish fixed roles
+                const sorted = Object.keys(data).sort((a, b) => data[a] - data[b]);
+                console.log('[FIREBASE] Participants updated:', sorted);
+                setParticipants(sorted);
             } else {
                 setParticipants([]);
             }
@@ -60,7 +69,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         const unsubOffer = onValue(offerRef, async (snapshot) => {
             const offerMsg = snapshot.val();
             if (offerMsg && offerMsg.senderId !== userId) {
-                console.log('[FIREBASE] Offer received');
+                console.log('[FIREBASE] Offer received from:', offerMsg.senderId);
                 await handleIncomingOffer(offerMsg);
             }
         });
@@ -69,7 +78,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         const unsubAnswer = onValue(answerRef, async (snapshot) => {
             const answerMsg = snapshot.val();
             if (answerMsg && answerMsg.senderId !== userId) {
-                console.log('[FIREBASE] Answer received');
+                console.log('[FIREBASE] Answer received from:', answerMsg.senderId);
                 await handleIncomingAnswer(answerMsg);
             }
         });
@@ -93,6 +102,9 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             unsubOffer();
             unsubAnswer();
             remove(myParticipantRef);
+            if (localStream.current) {
+                localStream.current.getTracks().forEach(track => track.stop());
+            }
         };
     }, [roomId, userId]);
 
@@ -100,7 +112,14 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         let pc = peerConnection.current;
         if (!pc) pc = initializePeerConnection();
 
+        console.log('[WEBRTC] Processing offer...');
         await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+
+        // Before answering, ensure we also have our mic ready if possible
+        if (!localStream.current) {
+            await setupMediaStream(pc);
+        }
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
 
@@ -115,6 +134,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const handleIncomingAnswer = async (msg: any) => {
         const pc = peerConnection.current;
         if (pc) {
+            console.log('[WEBRTC] Processing answer...');
             await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
         }
     };
@@ -125,8 +145,25 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             try {
                 await pc.addIceCandidate(new RTCIceCandidate(candidateData));
             } catch (e) {
-                console.error('Error adding ICE candidate', e);
+                console.error('[WEBRTC] Error adding ICE candidate', e);
             }
+        }
+    };
+
+    const setupMediaStream = async (pc: RTCPeerConnection) => {
+        try {
+            console.log('[WEBRTC] requesting mic');
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            console.log('[WEBRTC] mic granted');
+            localStream.current = stream;
+            stream.getTracks().forEach(track => {
+                pc.addTrack(track, stream);
+                console.log('[WEBRTC] audio track added:', track.label);
+            });
+            return stream;
+        } catch (e) {
+            console.error('[WEBRTC] mic error:', e);
+            return null;
         }
     };
 
@@ -151,6 +188,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             return;
         }
 
+        // Binary playback (fallback or data-channel specific)
         const arrayBuffer = event.data;
         if (!(arrayBuffer instanceof ArrayBuffer)) return;
 
@@ -182,6 +220,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const initializePeerConnection = () => {
         if (peerConnection.current) return peerConnection.current;
 
+        console.log('[WEBRTC] Initializing PeerConnection');
         const pc = new RTCPeerConnection(ICE_SERVERS);
 
         pc.onicecandidate = (event) => {
@@ -199,10 +238,23 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         };
 
         pc.onconnectionstatechange = () => {
+            console.log('[WEBRTC] connectionState:', pc.connectionState);
             setIsConnected(pc.connectionState === 'connected');
         };
 
+        pc.oniceconnectionstatechange = () => {
+            console.log('[WEBRTC] iceConnectionState:', pc.iceConnectionState);
+        };
+
+        pc.ontrack = (event) => {
+            console.log('[WEBRTC] remote audio received');
+            if (remoteAudioRef.current) {
+                remoteAudioRef.current.srcObject = event.streams[0];
+            }
+        };
+
         pc.ondatachannel = (event) => {
+            console.log('[WEBRTC] DataChannel received');
             const receiveChannel = event.channel;
             setupDataChannelEvents(receiveChannel);
             dataChannel.current = receiveChannel;
@@ -214,9 +266,25 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
 
     const startCall = async () => {
         const targetId = participants.find(p => p !== userId);
-        if (!targetId) return;
+        if (!targetId) {
+            console.warn('[WEBRTC] No peer to call yet');
+            return;
+        }
 
+        // Role check: Ensure ONLY ONE peer creates the offer
+        // Let's make the SECOND person (joiner) the caller so they have someone to call.
+        if (participants[1] !== userId) {
+            console.log('[WEBRTC] Waiting for joiner to initiate call...');
+            return;
+        }
+
+        console.log('[WEBRTC] Starting call (Initiating offer)');
         const pc = initializePeerConnection();
+
+        // Setup Media
+        await setupMediaStream(pc);
+
+        // Setup Data
         const channel = pc.createDataChannel('audio-channel');
         setupDataChannelEvents(channel);
         dataChannel.current = channel;
