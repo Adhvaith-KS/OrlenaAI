@@ -3,20 +3,50 @@ import { Room } from '../../types';
 
 export const dynamic = 'force-dynamic';
 
-/**
- * VERCEL SERVERLESS SIGNALING STORE (EPHEMERAL)
- * Note: Redis/KV is required for true cross-instance reliability.
- */
-const globalRooms = (globalThis as any).rooms || {};
-(globalThis as any).rooms = globalRooms;
-
-const ROOMS: { [roomId: string]: Room } = globalRooms;
-
 const NO_CACHE_HEADERS = {
     'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
     'Pragma': 'no-cache',
     'Expires': '0',
 };
+
+// --- In-Memory Fallback ---
+const globalRooms = (globalThis as any).rooms || {};
+(globalThis as any).rooms = globalRooms;
+const MEMORY_ROOMS: { [roomId: string]: Room } = globalRooms;
+
+// --- Vercel KV Persistence (Best for Production) ---
+const KV_URL = process.env.KV_REST_API_URL;
+const KV_TOKEN = process.env.KV_REST_API_TOKEN;
+
+async function kvRequest(command: string, ...args: any[]) {
+    if (!KV_URL || !KV_TOKEN) return null;
+    try {
+        const res = await fetch(`${KV_URL}/${command}/${args.join('/')}`, {
+            headers: { Authorization: `Bearer ${KV_TOKEN}` },
+            cache: 'no-store'
+        });
+        return (await res.json()).result;
+    } catch (e) {
+        console.error('[KV_ERROR]', e);
+        return null;
+    }
+}
+
+async function getRoom(roomId: string): Promise<Room | null> {
+    if (KV_URL && KV_TOKEN) {
+        const data = await kvRequest('get', `room:${roomId}`);
+        return data ? JSON.parse(data) : null;
+    }
+    return MEMORY_ROOMS[roomId] || null;
+}
+
+async function saveRoom(roomId: string, room: Room) {
+    if (KV_URL && KV_TOKEN) {
+        await kvRequest('set', `room:${roomId}`, JSON.stringify(room), 'EX', '3600'); // 1h expiry
+    } else {
+        MEMORY_ROOMS[roomId] = room;
+    }
+}
 
 export async function POST(req: NextRequest) {
     try {
@@ -27,18 +57,17 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: 'Missing roomId or userId' }, { status: 400, headers: NO_CACHE_HEADERS });
         }
 
-        // Lazy Room Creation
-        if (!ROOMS[roomId]) {
-            console.log(`[VERCEL_DEBUG] LAZY_ROOM_CREATE: ${roomId}`);
-            ROOMS[roomId] = {
+        let room = await getRoom(roomId);
+
+        if (!room) {
+            console.log(`[VERCEL_DEBUG] INIT_ROOM: ${roomId}`);
+            room = {
                 id: roomId,
                 participants: [],
                 messages: {},
                 ttsModel: body.ttsModel
             };
         }
-
-        const room = ROOMS[roomId];
 
         if (type === 'join') {
             if (body.ttsModel && !room.ttsModel) room.ttsModel = body.ttsModel;
@@ -50,7 +79,7 @@ export async function POST(req: NextRequest) {
                 room.participants.push(userId);
                 room.messages[userId] = [];
             }
-
+            await saveRoom(roomId, room);
             return NextResponse.json({
                 success: true,
                 participants: room.participants,
@@ -62,6 +91,7 @@ export async function POST(req: NextRequest) {
             if (!room.messages[targetId]) room.messages[targetId] = [];
             console.log(`[VERCEL_DEBUG] SIGNAL: ${type} from ${userId} to ${targetId}`);
             room.messages[targetId].push({ type, senderId: userId, data });
+            await saveRoom(roomId, room);
             return NextResponse.json({ success: true }, { headers: NO_CACHE_HEADERS });
         }
 
@@ -82,15 +112,16 @@ export async function GET(req: NextRequest) {
             return NextResponse.json({ error: 'Missing params' }, { status: 400, headers: NO_CACHE_HEADERS });
         }
 
-        if (!ROOMS[roomId]) {
+        const room = await getRoom(roomId);
+        if (!room) {
             return NextResponse.json({ messages: [], participants: [], ttsModel: null }, { headers: NO_CACHE_HEADERS });
         }
 
-        const room = ROOMS[roomId];
         const myMessages = room.messages[userId] || [];
 
         if (myMessages.length > 0) {
             room.messages[userId] = []; // Clear inbox
+            await saveRoom(roomId, room);
         }
 
         return NextResponse.json({

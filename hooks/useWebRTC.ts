@@ -22,42 +22,66 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     useEffect(() => {
         if (!roomId || !userId) return;
 
-        // Join room immediately
-        fetch('/api/signaling', {
-            method: 'POST',
-            body: JSON.stringify({ type: 'join', roomId, userId, ttsModel: initialModel }),
-            cache: 'no-store',
-        }).then(res => res.json()).then(data => {
-            if (data.participants) setParticipants(data.participants);
-            if (data.ttsModel) setTtsModel(data.ttsModel);
-        });
+        let pollingActive = true;
 
-        const interval = setInterval(async () => {
+        const joinAndPoll = async () => {
+            // Join attempt
             try {
-                const res = await fetch(`/api/signaling?roomId=${roomId}&userId=${userId}`, {
-                    cache: 'no-store'
+                const joinRes = await fetch('/api/signaling', {
+                    method: 'POST',
+                    body: JSON.stringify({ type: 'join', roomId, userId, ttsModel: initialModel }),
+                    cache: 'no-store',
                 });
-                const data = await res.json();
-
-                if (data.participants) {
-                    setParticipants(data.participants);
+                const joinData = await joinRes.json();
+                if (joinData.participants) {
+                    setParticipants(prev => {
+                        // Sticky logic: Only update if we see more or same participants
+                        if (joinData.participants.length >= prev.length) return joinData.participants;
+                        return prev;
+                    });
                 }
-
-                if (data.ttsModel) {
-                    setTtsModel(data.ttsModel);
-                }
-
-                if (data.messages) {
-                    for (const msg of data.messages as SignalMessage[]) {
-                        await handleSignal(msg);
-                    }
-                }
+                if (joinData.ttsModel) setTtsModel(joinData.ttsModel);
             } catch (e) {
-                console.error('Polling error:', e);
+                console.error('Join error:', e);
             }
-        }, 1000);
 
-        return () => clearInterval(interval);
+            // Continuous Polling
+            while (pollingActive) {
+                try {
+                    const res = await fetch(`/api/signaling?roomId=${roomId}&userId=${userId}`, {
+                        cache: 'no-store'
+                    });
+                    const data = await res.json();
+
+                    if (data.participants) {
+                        setParticipants(prev => {
+                            // STICKY PARTICIPANTS: Prevent flickering if we hit an isolated instance
+                            // If we already know about 2 people, don't drop back to 1.
+                            if (data.participants.length >= prev.length) return data.participants;
+                            return prev;
+                        });
+                    }
+
+                    if (data.ttsModel) setTtsModel(data.ttsModel);
+
+                    if (data.messages && data.messages.length > 0) {
+                        for (const msg of data.messages as SignalMessage[]) {
+                            await handleSignal(msg);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Polling error:', e);
+                }
+                // Faster frequency for hackathon responsiveness
+                await new Promise(resolve => setTimeout(resolve, 800));
+            }
+        };
+
+        joinAndPoll();
+
+        return () => {
+            pollingActive = false;
+        };
     }, [roomId, userId]);
 
     // Initiate connection if we are the second person or "caller" logic
