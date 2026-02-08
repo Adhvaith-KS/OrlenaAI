@@ -155,7 +155,7 @@ export default function RoomPage() {
                 }
 
                 // STT API Call
-                console.log(`[PTT] sending to STT`);
+                console.log(`[PTT] sending audio to STT`);
                 const formData = new FormData();
                 formData.append('audio', blob);
 
@@ -234,26 +234,14 @@ export default function RoomPage() {
         }
     }, []);
 
-    // Sync Profile when connection opens or profile is updated
+    // Sync Profile ONLY when profile is explicitly set
     useEffect(() => {
-        if (isDataChannelOpen && profile.isSet) {
+        if (profile.isSet) {
             const p = { name: profile.name, avatar: profile.avatar, gender: profile.gender };
-            console.log('[SYNC] Broadcasting profile:', p);
+            console.log('[SYNC] Writing profile to Firebase:', p);
             sendProfile(p);
-
-            // Re-broadcast to ensure delivery
-            const t1 = setTimeout(() => {
-                console.log('[SYNC] Re-broadcasting profile (1s)...');
-                sendProfile(p);
-            }, 1000);
-            const t2 = setTimeout(() => {
-                console.log('[SYNC] Re-broadcasting profile (3s)...');
-                sendProfile(p);
-            }, 3000);
-
-            return () => { clearTimeout(t1); clearTimeout(t2); };
         }
-    }, [isDataChannelOpen, profile.isSet, sendProfile]);
+    }, [profile.isSet, profile.name, profile.avatar, profile.gender, sendProfile]);
 
     useEffect(() => {
         const handleIncoming = async () => {
