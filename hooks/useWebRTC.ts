@@ -155,6 +155,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             console.log('[WEBRTC] requesting mic');
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             console.log('[WEBRTC] mic granted');
+            console.log('[WEBRTC] local audio playback disabled'); // Echo prevention log
             localStream.current = stream;
             stream.getTracks().forEach(track => {
                 pc.addTrack(track, stream);
@@ -342,6 +343,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         remoteProfile,
         sendProfile,
         sendSpeakingStatus,
-        ttsModel
+        ttsModel,
+        localStream: localStream.current
     };
 };

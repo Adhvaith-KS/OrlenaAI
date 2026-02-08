@@ -60,7 +60,8 @@ export default function RoomPage() {
         remoteProfile,
         sendProfile,
         sendSpeakingStatus,
-        ttsModel
+        ttsModel,
+        localStream
     } = useWebRTC(roomId, userId, initialModel);
 
     const translateText = useCallback(async (text: string, source: string, target: string): Promise<string> => {
@@ -109,6 +110,7 @@ export default function RoomPage() {
                     mediaRecorderRef.current.start(100);
                     setIsTalking(true);
                     sendSpeakingStatus(true); // Signal speaking started
+                    console.log('[PTT] recording started');
                 } catch (e) {
                     console.error("Failed to start recorder", e);
                 }
@@ -118,7 +120,8 @@ export default function RoomPage() {
 
     const initRecorder = async () => {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            // Use the shared stream from WebRTC to avoid conflict
+            const recorderStream = localStream || await navigator.mediaDevices.getUserMedia({ audio: true });
 
             const types = [
                 'audio/webm;codecs=opus',
@@ -131,32 +134,30 @@ export default function RoomPage() {
 
             console.log(`[REC] Initializing recorder. Type: ${supportedType || 'default'}`);
 
-            const mediaRecorder = new MediaRecorder(stream, options);
+            const mediaRecorder = new MediaRecorder(recorderStream, options);
             mediaRecorderRef.current = mediaRecorder;
             audioChunksRef.current = [];
 
             mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
                     audioChunksRef.current.push(event.data);
-                    console.log(`[REC] Chunk received: ${event.data.size}`);
                 }
             };
 
             mediaRecorder.onstop = () => {
+                console.log('[PTT] recording stopped');
                 const blob = new Blob(audioChunksRef.current, { type: supportedType || 'audio/webm' });
-                console.log(`[REC] Recording stopped. Total: ${blob.size}, Type: ${blob.type}`);
+                console.log(`[PTT] audio blob size: ${blob.size} bytes`);
 
                 if (blob.size < 1000) {
                     console.warn('[REC] Blob too small, ignoring.');
                     return;
                 }
 
-                // sendAudio(blob); // DISABLE RAW AUDIO SENDING as per requirement
-
                 // STT API Call
-                console.log(`[STT] Sending audio blob: ${blob.size} bytes`);
+                console.log(`[PTT] sending to STT`);
                 const formData = new FormData();
-                formData.append('audio', blob); // 'audio' key must match backend expectation? Backend expects 'audio' from formData.get('audio'). Correct.
+                formData.append('audio', blob);
 
                 fetch('/api/stt', { method: 'POST', body: formData })
                     .then(async (res) => {
@@ -167,15 +168,10 @@ export default function RoomPage() {
                         return res.json();
                     })
                     .then(data => {
-                        console.log('STT Result:', data);
+                        console.log('[PTT] STT response received');
                         if (data.transcript) {
                             const text = data.transcript;
-                            // Sarvam STT usually returns 'language_code' in response if detecting.
-                            // If missing, we might assume undefined or fallback.
-                            // The user claims Sarvam will auto-detect.
-                            // Let's look for 'language_code' or 'detected_language'.
-                            // For safety, defaulting to 'unknown' if not present, checking logs will reveal actual field.
-                            const detectedLang = data.language_code || 'hi-IN'; // Fallback to Hindi just for hackathon testing if detection undefined
+                            const detectedLang = data.language_code || 'hi-IN';
 
                             console.log(`[STT] Transcript: "${text}", Detected Lang: ${detectedLang}`);
                             sendText(text, detectedLang);
@@ -188,12 +184,12 @@ export default function RoomPage() {
                         console.error('STT Request Failed:', err);
                     });
 
-                stream.getTracks().forEach(track => track.stop());
+                // Do not stop the stream tracks here, as they are shared with WebRTC
                 mediaRecorderRef.current = null;
             };
 
         } catch (err) {
-            console.error('Error accessing microphone:', err);
+            console.error('Error accessing microphone for recorder:', err);
         }
     };
 
