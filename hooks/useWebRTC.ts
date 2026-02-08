@@ -2,6 +2,59 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { db } from '@/lib/firebase';
 import { ref, onValue, set, push, onChildAdded, off, remove, onDisconnect } from 'firebase/database';
 
+// GLOBAL AUDIO GUARD: Intercepts ANY attempt to play local microphone audio through speakers
+if (typeof window !== 'undefined') {
+    const originalSrcObjectSetter = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject')?.set;
+
+    if (originalSrcObjectSetter) {
+        Object.defineProperty(HTMLMediaElement.prototype, 'srcObject', {
+            set: function (val) {
+                if (val instanceof MediaStream) {
+                    const tracks = val.getTracks();
+                    const isLocalMic = tracks.some(t =>
+                        t.label.toLowerCase().includes('mic') ||
+                        t.label.toLowerCase().includes('input') ||
+                        t.label.toLowerCase().includes('default')
+                    );
+
+                    if (isLocalMic) {
+                        console.warn('Blocked local microphone playback attempt globally.');
+                        this.muted = true;
+                        this.volume = 0;
+                        // Still allow assignment for WebRTC internal sinks, but force silence
+                        return originalSrcObjectSetter.call(this, val);
+                    }
+                }
+                return originalSrcObjectSetter.call(this, val);
+            }
+        });
+    }
+
+    // MutationObserver to catch rogue elements added by React or extensions
+    const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+                if (node instanceof HTMLMediaElement) {
+                    const val = node.srcObject;
+                    if (val instanceof MediaStream) {
+                        const isLocalMic = val.getTracks().some(t =>
+                            t.label.toLowerCase().includes('mic') ||
+                            t.label.toLowerCase().includes('input') ||
+                            t.label.toLowerCase().includes('default')
+                        );
+                        if (isLocalMic) {
+                            node.muted = true;
+                            node.volume = 0;
+                            console.warn('Silenced new local microphone element.');
+                        }
+                    }
+                }
+            });
+        });
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+}
+
 const ICE_SERVERS = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
 };
@@ -24,6 +77,9 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     useEffect(() => {
         const audio = new Audio();
         audio.autoplay = true;
+        // DEFENSIVE DEFAULT: Muted and zero volume until verified remote audio arrives
+        audio.muted = true;
+        audio.volume = 0;
         remoteAudioRef.current = audio;
     }, []);
 
@@ -149,12 +205,21 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
 
     const setupMediaStream = async (pc: RTCPeerConnection) => {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            console.log('[WEBRTC] local audio playback disabled');
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
 
-            localStreamRef.current = stream;
-            stream.getTracks().forEach(track => pc.addTrack(track, stream));
-            return stream;
+            // MANDATORY CLONING: Separate the capture tracks from potential accidental sinks
+            const clonedStream = stream.clone();
+            console.log('[WEBRTC] local microphone cloned and isolated');
+
+            localStreamRef.current = clonedStream;
+            clonedStream.getTracks().forEach(track => pc.addTrack(track, clonedStream));
+            return clonedStream;
         } catch (e) {
             console.error('[WEBRTC] Mic Error', e);
         }
@@ -217,9 +282,33 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             setIsConnected(pc.connectionState === 'connected');
         };
         pc.ontrack = (event) => {
-            console.log('[WEBRTC] remote audio received');
+            const incomingStream = event.streams[0];
+            const tracks = incomingStream.getTracks();
+
+            // 1. Label-Based Guard (Microphone/Input Detection)
+            const isLocalMicrophone = tracks.some(t =>
+                t.label.toLowerCase().includes('mic') ||
+                t.label.toLowerCase().includes('input') ||
+                t.label.toLowerCase().includes('default')
+            );
+
+            // 2. ID-Based Guard (Identity Check)
+            const isLocalId = localStreamRef.current && incomingStream.id === localStreamRef.current.id;
+
+            if (isLocalMicrophone || isLocalId) {
+                console.error('ERROR: Local microphone routed to speaker — prevented.');
+                if (remoteAudioRef.current) {
+                    remoteAudioRef.current.muted = true;
+                    remoteAudioRef.current.volume = 0;
+                }
+                return;
+            }
+
+            console.log('[WEBRTC] Verified remote stream received. Unmuting playback.');
             if (remoteAudioRef.current) {
-                remoteAudioRef.current.srcObject = event.streams[0];
+                remoteAudioRef.current.srcObject = incomingStream;
+                remoteAudioRef.current.muted = false;
+                remoteAudioRef.current.volume = 1.0;
             }
         };
         pc.ondatachannel = (event) => {
