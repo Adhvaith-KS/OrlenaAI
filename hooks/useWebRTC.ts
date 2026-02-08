@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { SignalMessage } from '@/app/types';
+import { db } from '@/lib/firebase';
+import { ref, onValue, set, push, onChildAdded, off, remove, onDisconnect } from 'firebase/database';
 
 const ICE_SERVERS = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
@@ -10,103 +11,136 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const [participants, setParticipants] = useState<string[]>([]);
     const peerConnection = useRef<RTCPeerConnection | null>(null);
     const dataChannel = useRef<RTCDataChannel | null>(null);
-    const [remoteAudioUrl, setRemoteAudioUrl] = useState<string | null>(null);
     const [dataChannelOpen, setDataChannelOpen] = useState(false);
     const [isRemoteSpeaking, setIsRemoteSpeaking] = useState(false);
     const [isPeerSpeaking, setIsPeerSpeaking] = useState(false);
     const [lastTranscript, setLastTranscript] = useState<{ text: string; sender: 'me' | 'remote'; language?: string } | null>(null);
     const [remoteProfile, setRemoteProfile] = useState<{ name: string; avatar: string; gender?: string } | null>(null);
-    const [ttsModel, setTtsModel] = useState<string>('bulbul:v3-beta');
+    const [ttsModel, setTtsModel] = useState<string>(initialModel || 'bulbul:v3-beta');
 
-    // Polling for signals
+    // Firebase Signaling
     useEffect(() => {
         if (!roomId || !userId) return;
 
-        let pollingActive = true;
+        console.log(`[FIREBASE] Joining room: ${roomId} as ${userId}`);
 
-        const joinAndPoll = async () => {
-            // Join attempt
-            try {
-                const joinRes = await fetch('/api/signaling', {
-                    method: 'POST',
-                    body: JSON.stringify({ type: 'join', roomId, userId, ttsModel: initialModel }),
-                    cache: 'no-store',
-                });
-                const joinData = await joinRes.json();
-                if (joinData.participants) {
-                    setParticipants(prev => {
-                        // Sticky logic: Only update if we see more or same participants
-                        if (joinData.participants.length >= prev.length) return joinData.participants;
-                        return prev;
-                    });
-                }
-                if (joinData.ttsModel) setTtsModel(joinData.ttsModel);
-            } catch (e) {
-                console.error('Join error:', e);
+        const roomRef = ref(db, `rooms/${roomId}`);
+        const participantsRef = ref(db, `rooms/${roomId}/participants`);
+        const myParticipantRef = ref(db, `rooms/${roomId}/participants/${userId}`);
+        const offerRef = ref(db, `rooms/${roomId}/offer`);
+        const answerRef = ref(db, `rooms/${roomId}/answer`);
+        const myCandidatesRef = ref(db, `rooms/${roomId}/candidates/${userId}`);
+
+        // 1. Join & Presence
+        set(myParticipantRef, true);
+        onDisconnect(myParticipantRef).remove();
+
+        // 2. Sync Participants
+        const unsubParticipants = onValue(participantsRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                const plist = Object.keys(data);
+                console.log('[FIREBASE] Participants updated:', plist);
+                setParticipants(plist);
+            } else {
+                setParticipants([]);
             }
+        });
 
-            // Continuous Polling
-            while (pollingActive) {
-                try {
-                    const res = await fetch(`/api/signaling?roomId=${roomId}&userId=${userId}`, {
-                        cache: 'no-store'
-                    });
-                    const data = await res.json();
+        // 3. Sync TTS Model
+        const unsubModel = onValue(ref(db, `rooms/${roomId}/ttsModel`), (snapshot) => {
+            const model = snapshot.val();
+            if (model) setTtsModel(model);
+        });
+        if (initialModel) {
+            set(ref(db, `rooms/${roomId}/ttsModel`), initialModel);
+        }
 
-                    if (data.participants) {
-                        setParticipants(prev => {
-                            // STICKY PARTICIPANTS: Prevent flickering if we hit an isolated instance
-                            // If we already know about 2 people, don't drop back to 1.
-                            if (data.participants.length >= prev.length) return data.participants;
-                            return prev;
-                        });
-                    }
-
-                    if (data.ttsModel) setTtsModel(data.ttsModel);
-
-                    if (data.messages && data.messages.length > 0) {
-                        for (const msg of data.messages as SignalMessage[]) {
-                            await handleSignal(msg);
-                        }
-                    }
-                } catch (e) {
-                    console.error('Polling error:', e);
-                }
-                // Faster frequency for hackathon responsiveness
-                await new Promise(resolve => setTimeout(resolve, 800));
+        // 4. Listen for Offer (Joiner side)
+        const unsubOffer = onValue(offerRef, async (snapshot) => {
+            const offerMsg = snapshot.val();
+            if (offerMsg && offerMsg.senderId !== userId) {
+                console.log('[FIREBASE] Offer received');
+                await handleIncomingOffer(offerMsg);
             }
-        };
+        });
 
-        joinAndPoll();
+        // 5. Listen for Answer (Caller side)
+        const unsubAnswer = onValue(answerRef, async (snapshot) => {
+            const answerMsg = snapshot.val();
+            if (answerMsg && answerMsg.senderId !== userId) {
+                console.log('[FIREBASE] Answer received');
+                await handleIncomingAnswer(answerMsg);
+            }
+        });
+
+        // 6. Listen for ICE Candidates
+        const unsubCandidates = onChildAdded(myCandidatesRef, (snapshot) => {
+            const candidate = snapshot.val();
+            if (candidate && candidate.senderId !== userId) {
+                console.log('[FIREBASE] ICE candidate received');
+                handleIncomingCandidate(candidate.data);
+            }
+        });
 
         return () => {
-            pollingActive = false;
+            off(participantsRef);
+            off(offerRef);
+            off(answerRef);
+            off(myCandidatesRef);
+            unsubParticipants();
+            unsubModel();
+            unsubOffer();
+            unsubAnswer();
+            remove(myParticipantRef);
         };
     }, [roomId, userId]);
 
-    // Initiate connection if we are the second person or "caller" logic
-    // Simplified: If we see another participant and we haven't connected, try to connect.
-    // Actually, simpler: Allow manual "Start Call" or auto-start when 2 people exist.
-    // Let's go with: The person who IS NOT the creator (the joiner) sends the offer? 
-    // Or: Just checking if participants > 1 and I am the one with higher ID? 
-    // To keep it VERY simple: The "Room" page will have a `useEffect` that triggers `initiateConnection` when `participants.length === 2`.
-    // But we need to avoid race conditions. 
-    // Let's add a function `startCall()` exposed by the hook.
+    const handleIncomingOffer = async (msg: any) => {
+        let pc = peerConnection.current;
+        if (!pc) pc = initializePeerConnection();
+
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        console.log('[FIREBASE] writing answer');
+        set(ref(db, `rooms/${roomId}/answer`), {
+            type: 'answer',
+            senderId: userId,
+            data: { sdp: answer.sdp, type: answer.type }
+        });
+    };
+
+    const handleIncomingAnswer = async (msg: any) => {
+        const pc = peerConnection.current;
+        if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
+        }
+    };
+
+    const handleIncomingCandidate = async (candidateData: any) => {
+        const pc = peerConnection.current;
+        if (pc) {
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate(candidateData));
+            } catch (e) {
+                console.error('Error adding ICE candidate', e);
+            }
+        }
+    };
 
     const handleDataMessage = (event: MessageEvent) => {
-        // Handle Text Messages (Transcripts)
         if (typeof event.data === 'string') {
-            console.log('[DATA] Received text message:', event.data);
             try {
                 const parsed = JSON.parse(event.data);
                 if (parsed.type === 'transcript') {
                     setLastTranscript({
                         text: parsed.text,
                         sender: 'remote',
-                        language: parsed.language // capture the language!
+                        language: parsed.language
                     });
-                } else if (parsed.type === 'peer-profile' || parsed.type === 'user_profile') {
-                    console.log('[DATA] Received peer profile:', parsed.profile);
+                } else if (parsed.type === 'peer-profile') {
                     setRemoteProfile(parsed.profile);
                 } else if (parsed.type === 'speaking_status') {
                     setIsPeerSpeaking(parsed.isSpeaking);
@@ -117,43 +151,20 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             return;
         }
 
-        // Handle Binary Messages (Audio)
         const arrayBuffer = event.data;
-        // Verify it's actually an ArrayBuffer
-        if (!(arrayBuffer instanceof ArrayBuffer)) {
-            console.warn('[DATA] Received unknown data type:', typeof arrayBuffer);
-            return;
-        }
-
-        console.log('[DATA] Received audio size:', arrayBuffer.byteLength);
+        if (!(arrayBuffer instanceof ArrayBuffer)) return;
 
         try {
-            // Use generic type for playback to allow browser sniffing.
-            // Strict 'audio/webm;codecs=opus' sometimes causes NotSupportedError in new Audio() if container/codec structure slightly varies.
             const blob = new Blob([arrayBuffer], { type: 'audio/webm' });
-            console.log(`[REC] Blob created: ${blob.size} bytes`);
-
             const url = URL.createObjectURL(blob);
             const audio = new Audio(url);
-
-            // Explicitly load to check for source errors
             audio.load();
-
             setIsRemoteSpeaking(true);
-
             audio.onended = () => {
                 setIsRemoteSpeaking(false);
                 URL.revokeObjectURL(url);
             };
-
-            const playPromise = audio.play();
-            if (playPromise !== undefined) {
-                playPromise.catch(e => {
-                    console.error('Audio play failed', e);
-                    setIsRemoteSpeaking(false);
-                });
-            }
-
+            audio.play().catch(() => setIsRemoteSpeaking(false));
         } catch (e) {
             console.error('Error handling audio message', e);
             setIsRemoteSpeaking(false);
@@ -161,21 +172,10 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     };
 
     const setupDataChannelEvents = (channel: RTCDataChannel) => {
-        channel.binaryType = 'arraybuffer'; // Crucial: ensure we get raw bytes
-
-        if (channel.readyState === 'open') {
-            console.log('Data channel ALREADY OPEN');
-            setDataChannelOpen(true);
-        }
-        channel.onopen = () => {
-            console.log('Data channel OPEN');
-            setDataChannelOpen(true);
-        };
-        channel.onclose = () => {
-            console.log('Data channel CLOSED');
-            setDataChannelOpen(false);
-        };
-        channel.onerror = (e) => console.error('Data channel error:', e);
+        channel.binaryType = 'arraybuffer';
+        if (channel.readyState === 'open') setDataChannelOpen(true);
+        channel.onopen = () => setDataChannelOpen(true);
+        channel.onclose = () => setDataChannelOpen(false);
         channel.onmessage = handleDataMessage;
     };
 
@@ -186,21 +186,23 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
 
         pc.onicecandidate = (event) => {
             if (event.candidate) {
-                // Find the other participant
                 const targetId = participants.find(p => p !== userId);
                 if (targetId) {
-                    sendSignal('ice-candidate', event.candidate, targetId);
+                    console.log('[FIREBASE] Sending ICE candidate to:', targetId);
+                    const targetCandidatesRef = ref(db, `rooms/${roomId}/candidates/${targetId}`);
+                    push(targetCandidatesRef, {
+                        senderId: userId,
+                        data: event.candidate.toJSON()
+                    });
                 }
             }
         };
 
         pc.onconnectionstatechange = () => {
-            console.log('Connection state:', pc.connectionState);
             setIsConnected(pc.connectionState === 'connected');
         };
 
         pc.ondatachannel = (event) => {
-            console.log('Received DataChannel from remote');
             const receiveChannel = event.channel;
             setupDataChannelEvents(receiveChannel);
             dataChannel.current = receiveChannel;
@@ -210,97 +212,52 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         return pc;
     };
 
-    const createDataChannel = (pc: RTCPeerConnection) => {
-        console.log('Creating DataChannel locally');
+    const startCall = async () => {
+        const targetId = participants.find(p => p !== userId);
+        if (!targetId) return;
+
+        const pc = initializePeerConnection();
         const channel = pc.createDataChannel('audio-channel');
         setupDataChannelEvents(channel);
         dataChannel.current = channel;
-    };
-
-
-
-    const sendSignal = (type: string, data: any, targetId: string) => {
-        fetch('/api/signaling', {
-            method: 'POST',
-            body: JSON.stringify({ type, roomId, userId, targetId, data }),
-            cache: 'no-store',
-        });
-    };
-
-    const handleSignal = async (msg: SignalMessage) => {
-        // Only handle if it's from the other person
-        if (msg.senderId === userId) return;
-
-        let pc = peerConnection.current;
-        if (!pc) pc = initializePeerConnection();
-
-        if (msg.type === 'offer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            sendSignal('answer', answer, msg.senderId);
-
-            // Also setup data channel listener was invalid here, it's connected in ondatachannel
-        } else if (msg.type === 'answer') {
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.data));
-        } else if (msg.type === 'ice-candidate') {
-            try {
-                await pc.addIceCandidate(new RTCIceCandidate(msg.data));
-            } catch (e) {
-                console.error('Error adding received ice candidate', e);
-            }
-        }
-    };
-
-    const startCall = async () => {
-        const targetId = participants.find(p => p !== userId);
-        if (!targetId) return; // No one to call
-
-        const pc = initializePeerConnection();
-        createDataChannel(pc);
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        sendSignal('offer', offer, targetId);
+
+        console.log('[FIREBASE] offer written');
+        set(ref(db, `rooms/${roomId}/offer`), {
+            type: 'offer',
+            senderId: userId,
+            data: { sdp: offer.sdp, type: offer.type }
+        });
     };
 
     const sendAudio = async (blob: Blob) => {
-        console.log(`[SEND] Sending audio. Size: ${blob.size}, Type: ${blob.type}`);
-
-        if (dataChannel.current && dataChannel.current.readyState === 'open') {
+        if (dataChannel.current?.readyState === 'open') {
             try {
                 const arrayBuffer = await blob.arrayBuffer();
-                console.log(`[SEND] Converting to ArrayBuffer. ByteLength: ${arrayBuffer.byteLength}`);
                 dataChannel.current.send(arrayBuffer);
             } catch (e) {
                 console.error('[SEND] Error sending audio:', e);
             }
-        } else {
-            console.warn('[SEND] Data channel not open');
         }
     };
 
     const sendText = (text: string, language?: string) => {
-        if (dataChannel.current && dataChannel.current.readyState === 'open') {
-            const payload = JSON.stringify({ type: 'transcript', text, language });
-            dataChannel.current.send(payload);
+        if (dataChannel.current?.readyState === 'open') {
+            dataChannel.current.send(JSON.stringify({ type: 'transcript', text, language }));
         }
     };
 
-    const sendProfile = (profile: { name: string; avatar: string }) => {
-        if (dataChannel.current && dataChannel.current.readyState === 'open') {
-            console.log('[DATA] Sending profile (peer-profile):', profile);
-            const payload = JSON.stringify({ type: 'peer-profile', profile });
-            dataChannel.current.send(payload);
-        } else {
-            console.warn('[DATA] Cannot send profile: DataChannel not open (State: ' + dataChannel.current?.readyState + ')');
+    const sendProfile = (profile: { name: string; avatar: string; gender?: string }) => {
+        if (dataChannel.current?.readyState === 'open') {
+            dataChannel.current.send(JSON.stringify({ type: 'peer-profile', profile }));
         }
     };
 
     const sendSpeakingStatus = (isSpeaking: boolean) => {
-        if (dataChannel.current && dataChannel.current.readyState === 'open') {
-            const payload = JSON.stringify({ type: 'speaking_status', isSpeaking });
-            dataChannel.current.send(payload);
+        if (dataChannel.current?.readyState === 'open') {
+            dataChannel.current.send(JSON.stringify({ type: 'speaking_status', isSpeaking }));
         }
     };
 
