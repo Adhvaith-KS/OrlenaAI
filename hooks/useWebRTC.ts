@@ -331,7 +331,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
 
     const startCall = useCallback(async () => {
         const targetId = participants.find(p => p !== userId);
-        if (!targetId || participants[1] !== userId) return;
+        if (!targetId) return;
 
         const pc = initializePeerConnection();
         await setupMediaStream(pc);

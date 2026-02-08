@@ -209,8 +209,9 @@ export default function RoomPage() {
 
     // Orlena Flow States: tracks the translation pipeline visualization
     type OrlenaFlowState = 'idle' | 'receiving' | 'translating' | 'playing';
-    const [orlenaFlowState, setOrlenaFlowState] = useState<OrlenaFlowState>('idle');
+    const [orlenaFlowState, setOrlenaFlowState] = useState<'idle' | 'receiving' | 'translating' | 'playing'>('idle');
     const [flowDirection, setFlowDirection] = useState<'me_to_peer' | 'peer_to_me' | null>(null);
+    const [hasCopied, setHasCopied] = useState(false);
 
     // Sync remote flow status to local UI visualization
     // Sync remote flow status to local UI visualization
@@ -387,12 +388,40 @@ export default function RoomPage() {
     return (
         <main className="flex min-h-screen flex-col bg-zinc-950 text-white">
             {/* Header */}
-            <header className="p-4 border-b border-zinc-800 flex justify-between items-center">
-                <h2 className="font-bold text-lg flex items-center gap-2">
-                    <span className="bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">Orlena AI</span>
-                    <span className="text-zinc-700">|</span>
-                    <span className="text-zinc-400 text-sm font-mono">{roomId}</span>
-                </h2>
+            {/* Header */}
+            <header className="p-4 border-b border-zinc-800 flex justify-between items-center bg-zinc-950/50 backdrop-blur-md sticky top-0 z-10">
+                <div className="flex items-center gap-6">
+                    <h2 className="font-bold text-xl bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400 hidden md:block">
+                        Orlena AI
+                    </h2>
+
+                    {/* Enhanced Room Code */}
+                    <button
+                        onClick={() => {
+                            navigator.clipboard.writeText(roomId);
+                            setHasCopied(true);
+                            setTimeout(() => setHasCopied(false), 2000);
+                        }}
+                        className="group flex items-center gap-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-indigo-500/30 px-3 py-1.5 md:px-4 md:py-2 rounded-xl transition-all duration-200 active:scale-95"
+                        title="Click to copy room code"
+                    >
+                        <div className="flex flex-col items-start text-left">
+                            <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider leading-none mb-0.5">Room Code</span>
+                            <span className="text-zinc-200 font-mono font-bold tracking-widest text-sm group-hover:text-indigo-200 transition-colors">
+                                {roomId}
+                            </span>
+                        </div>
+                        <div className="pl-3 border-l border-zinc-800 group-hover:border-zinc-700">
+                            {hasCopied ? (
+                                <span className="text-emerald-400 text-xs font-bold animate-pulse">Copied!</span>
+                            ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-500 group-hover:text-white transition-colors">
+                                    <rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+                                </svg>
+                            )}
+                        </div>
+                    </button>
+                </div>
 
                 {/* Language Controls */}
                 <div className="flex gap-4 items-center bg-zinc-900 px-4 py-2 rounded-lg border border-zinc-800">
@@ -687,14 +716,6 @@ export default function RoomPage() {
                 </div>
 
                 {/* Debug Info (Remove before production) */}
-                <div className="w-full max-w-2xl bg-black/50 p-2 rounded text-[10px] text-zinc-600 font-mono mt-4">
-                    <p>DEBUG INFO:</p>
-                    <p>Last Transcript: {JSON.stringify(lastTranscript)}</p>
-                    <p>My Hear Lang: {hearLang}</p>
-                    <p>Remote Profile: {JSON.stringify(remoteProfile)}</p>
-                    <p>Data Channel Open: {isDataChannelOpen ? 'YES' : 'NO'}</p>
-                    <p>My Profile Set: {profile.isSet ? 'YES' : 'NO'}</p>
-                </div>
             </div>
         </main >
     );
