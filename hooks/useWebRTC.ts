@@ -19,18 +19,12 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const [ttsModel, setTtsModel] = useState<string>(initialModel || 'bulbul:v3-beta');
     const localStreamRef = useRef<MediaStream | null>(null);
     const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
-    const localMutedSinkRef = useRef<HTMLAudioElement | null>(null);
 
-    // Initialize audio elements once
+    // Initialize remote audio element once
     useEffect(() => {
-        const remoteAudio = new Audio();
-        // Remove autoplay to control playback explicitly
-        remoteAudio.autoplay = false;
-        remoteAudioRef.current = remoteAudio;
-
-        const localSink = new Audio();
-        localSink.muted = true; // Crucial for echo prevention
-        localMutedSinkRef.current = localSink;
+        const audio = new Audio();
+        audio.autoplay = true;
+        remoteAudioRef.current = audio;
     }, []);
 
     // Firebase Signaling & Profile Sync
@@ -156,19 +150,13 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const setupMediaStream = async (pc: RTCPeerConnection) => {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            console.log('[WEBRTC] local audio playback disabled (muted sink applied)');
-
-            // Attach to muted sink to signal "no monitor" to browser
-            if (localMutedSinkRef.current) {
-                localMutedSinkRef.current.srcObject = stream;
-            }
+            console.log('[WEBRTC] local audio playback disabled');
 
             localStreamRef.current = stream;
             stream.getTracks().forEach(track => pc.addTrack(track, stream));
             return stream;
         } catch (e) {
             console.error('[WEBRTC] Mic Error', e);
-            return null;
         }
     };
 
@@ -232,8 +220,6 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             console.log('[WEBRTC] remote audio received');
             if (remoteAudioRef.current) {
                 remoteAudioRef.current.srcObject = event.streams[0];
-                // Explicit play instead of autoplay
-                remoteAudioRef.current.play().catch(e => console.error('[WEBRTC] Playback blocked:', e));
             }
         };
         pc.ondatachannel = (event) => {
