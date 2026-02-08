@@ -151,7 +151,6 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             console.log('[WEBRTC] local audio playback disabled');
-            console.log('[WEBRTC] local stream attached to audio? false'); // Required log
             localStreamRef.current = stream;
             stream.getTracks().forEach(track => pc.addTrack(track, stream));
             return stream;
@@ -218,14 +217,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             setIsConnected(pc.connectionState === 'connected');
         };
         pc.ontrack = (event) => {
-            // Defensive guard: Ensure we don't play our own stream if it somehow loops back
-            if (localStreamRef.current && event.streams[0].id === localStreamRef.current.id) {
-                console.log('[WEBRTC] local stream loopback ignored');
-                return;
-            }
-
             console.log('[WEBRTC] remote audio received');
-            console.log('[WEBRTC] remote stream received: true'); // Required log
             if (remoteAudioRef.current) {
                 remoteAudioRef.current.srcObject = event.streams[0];
             }
