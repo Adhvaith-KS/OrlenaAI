@@ -2,6 +2,10 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { db } from '@/lib/firebase';
 import { ref, onValue, set, push, onChildAdded, off, remove, onDisconnect } from 'firebase/database';
 
+// Module-level set to track ALL local stream IDs (original + clones)
+const LOCAL_STREAM_IDS = new Set<string>();
+const LOCAL_TRACK_IDS = new Set<string>();
+
 // GLOBAL AUDIO GUARD: Intercepts ANY attempt to play local microphone audio through speakers
 if (typeof window !== 'undefined') {
     const originalSrcObjectSetter = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'srcObject')?.set;
@@ -17,8 +21,10 @@ if (typeof window !== 'undefined') {
                         t.label.toLowerCase().includes('default')
                     );
 
-                    if (isLocalMic) {
-                        console.warn('Blocked local microphone playback attempt globally.');
+                    const isLocalTrack = tracks.some(t => LOCAL_TRACK_IDS.has(t.id));
+
+                    if (isLocalMic || LOCAL_STREAM_IDS.has(val.id) || isLocalTrack) {
+                        console.warn(`[Global Audio Guard] Blocked playback of local stream ${val.id}`);
                         this.muted = true;
                         this.volume = 0;
                         // Still allow assignment for WebRTC internal sinks, but force silence
@@ -42,10 +48,11 @@ if (typeof window !== 'undefined') {
                             t.label.toLowerCase().includes('input') ||
                             t.label.toLowerCase().includes('default')
                         );
-                        if (isLocalMic) {
+                        const isLocalTrack = val.getTracks().some(t => LOCAL_TRACK_IDS.has(t.id));
+                        if (isLocalMic || LOCAL_STREAM_IDS.has(val.id) || isLocalTrack) {
                             node.muted = true;
                             node.volume = 0;
-                            console.warn('Silenced new local microphone element.');
+                            console.warn(`[Global Audio Guard] Silenced new local microphone element for stream ${val.id}`);
                         }
                     }
                 }
@@ -60,6 +67,8 @@ const ICE_SERVERS = {
 };
 
 export const useWebRTC = (roomId: string, userId: string, initialModel?: string) => {
+    // Unique ID for this browser session to prevent self-loop signaling
+    const [clientId] = useState(() => Math.random().toString(36).substring(7) + Date.now());
     const [isConnected, setIsConnected] = useState(false);
     const [participants, setParticipants] = useState<string[]>([]);
     const peerConnection = useRef<RTCPeerConnection | null>(null);
@@ -73,14 +82,12 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const localStreamRef = useRef<MediaStream | null>(null);
     const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
-    // Initialize remote audio element once
+    // Initialize remote audio element once - DISABLED for loopback fix
+    // We don't actually need this element since audio is handled via TTS
     useEffect(() => {
-        const audio = new Audio();
-        audio.autoplay = true;
-        // DEFENSIVE DEFAULT: Muted and zero volume until verified remote audio arrives
-        audio.muted = true;
-        audio.volume = 0;
-        remoteAudioRef.current = audio;
+        // AUDIO LOOPBACK FIX: Don't create an auto-playing audio element
+        // The app uses STT -> Translate -> TTS, so WebRTC audio streams are not needed
+        remoteAudioRef.current = null;
     }, []);
 
     // Firebase Signaling & Profile Sync
@@ -134,23 +141,35 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         // 5. Signaling Listeners
         const unsubOffer = onValue(offerRef, async (snapshot) => {
             const offerMsg = snapshot.val();
-            if (offerMsg && offerMsg.senderId !== userId) {
-                console.log('[FIREBASE] Offer received');
+            if (offerMsg) {
+                if (offerMsg.senderClientId === clientId) {
+                    console.log('[WEBRTC] Ignoring self offer message');
+                    return;
+                }
+                console.log(`[FIREBASE] Processing remote peer signaling (Offer) from ${offerMsg.senderId}`);
                 await handleIncomingOffer(offerMsg);
             }
         });
 
         const unsubAnswer = onValue(answerRef, async (snapshot) => {
             const answerMsg = snapshot.val();
-            if (answerMsg && answerMsg.senderId !== userId) {
-                console.log('[FIREBASE] Answer received');
+            if (answerMsg) {
+                if (answerMsg.senderClientId === clientId) {
+                    console.log('[WEBRTC] Ignoring self answer message');
+                    return;
+                }
+                console.log(`[FIREBASE] Processing remote peer signaling (Answer) from ${answerMsg.senderId}`);
                 await handleIncomingAnswer(answerMsg);
             }
         });
 
         const unsubCandidates = onChildAdded(myCandidatesRef, (snapshot) => {
             const candidate = snapshot.val();
-            if (candidate && candidate.senderId !== userId) {
+            if (candidate) {
+                if (candidate.senderClientId === clientId) {
+                    console.log('[WEBRTC] Ignoring self ICE candidate');
+                    return;
+                }
                 handleIncomingCandidate(candidate.data);
             }
         });
@@ -183,6 +202,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         set(ref(db, `rooms/${roomId}/answer`), {
             type: 'answer',
             senderId: userId,
+            senderClientId: clientId,
             data: { sdp: answer.sdp, type: answer.type }
         });
     };
@@ -213,9 +233,17 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
                 }
             });
 
+            // Track the original stream ID
+            LOCAL_STREAM_IDS.add(stream.id);
+            stream.getTracks().forEach(t => LOCAL_TRACK_IDS.add(t.id));
+
             // MANDATORY CLONING: Separate the capture tracks from potential accidental sinks
             const clonedStream = stream.clone();
-            console.log('[WEBRTC] local microphone cloned and isolated');
+            LOCAL_STREAM_IDS.add(clonedStream.id);
+            clonedStream.getTracks().forEach(t => LOCAL_TRACK_IDS.add(t.id));
+
+            console.log(`[WEBRTC] local microphone cloned and isolated. Blocked Stream IDs:`, Array.from(LOCAL_STREAM_IDS));
+            console.log(`[WEBRTC] Blocked Track IDs:`, Array.from(LOCAL_TRACK_IDS));
 
             localStreamRef.current = clonedStream;
             clonedStream.getTracks().forEach(track => pc.addTrack(track, clonedStream));
@@ -239,21 +267,9 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             }
             return;
         }
-        // Audio playback fallback
-        const arrayBuffer = event.data;
-        if (!(arrayBuffer instanceof ArrayBuffer)) return;
-        try {
-            const blob = new Blob([arrayBuffer], { type: 'audio/webm' });
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.load();
-            setIsRemoteSpeaking(true);
-            audio.onended = () => { setIsRemoteSpeaking(false); URL.revokeObjectURL(url); };
-            audio.play().catch(() => setIsRemoteSpeaking(false));
-        } catch (e) {
-            console.error('Error handling audio message', e);
-            setIsRemoteSpeaking(false);
-        }
+        // AUDIO LOOPBACK FIX: Disable binary audio playback from DataChannel
+        // The app uses TTS for audio, so we don't need to play raw audio blobs
+        console.log('[WEBRTC] Binary data received on DataChannel - audio playback DISABLED');
     }, []);
 
     const setupDataChannelEvents = useCallback((channel: RTCDataChannel) => {
@@ -273,6 +289,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
                 if (targetId) {
                     push(ref(db, `rooms/${roomId}/candidates/${targetId}`), {
                         senderId: userId,
+                        senderClientId: clientId,
                         data: event.candidate.toJSON()
                     });
                 }
@@ -282,33 +299,22 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
             setIsConnected(pc.connectionState === 'connected');
         };
         pc.ontrack = (event) => {
-            const incomingStream = event.streams[0];
-            const tracks = incomingStream.getTracks();
+            // AUDIO LOOPBACK FIX: Completely disable WebRTC audio playback.
+            // The app uses STT -> Translate -> TTS flow, so raw audio streaming
+            // is not needed and was causing users to hear their own microphone.
+            // 
+            // The peer connection is still used for:
+            // 1. DataChannel (text transcripts, speaking status)
+            // 2. Presence detection (knowing a peer is connected)
+            //
+            // Audio is reconstructed via TTS on the receiving end.
+            console.log('[WEBRTC] ontrack fired - audio playback DISABLED to prevent loopback');
 
-            // 1. Label-Based Guard (Microphone/Input Detection)
-            const isLocalMicrophone = tracks.some(t =>
-                t.label.toLowerCase().includes('mic') ||
-                t.label.toLowerCase().includes('input') ||
-                t.label.toLowerCase().includes('default')
-            );
-
-            // 2. ID-Based Guard (Identity Check)
-            const isLocalId = localStreamRef.current && incomingStream.id === localStreamRef.current.id;
-
-            if (isLocalMicrophone || isLocalId) {
-                console.error('ERROR: Local microphone routed to speaker — prevented.');
-                if (remoteAudioRef.current) {
-                    remoteAudioRef.current.muted = true;
-                    remoteAudioRef.current.volume = 0;
-                }
-                return;
-            }
-
-            console.log('[WEBRTC] Verified remote stream received. Unmuting playback.');
+            // Keep the audio element permanently muted
             if (remoteAudioRef.current) {
-                remoteAudioRef.current.srcObject = incomingStream;
-                remoteAudioRef.current.muted = false;
-                remoteAudioRef.current.volume = 1.0;
+                remoteAudioRef.current.muted = true;
+                remoteAudioRef.current.volume = 0;
+                // Do NOT assign srcObject to avoid any playback
             }
         };
         pc.ondatachannel = (event) => {
@@ -335,6 +341,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         set(ref(db, `rooms/${roomId}/offer`), {
             type: 'offer',
             senderId: userId,
+            senderClientId: clientId,
             data: { sdp: offer.sdp, type: offer.type }
         });
     }, [participants, roomId, userId, initializePeerConnection, setupDataChannelEvents]);
@@ -385,3 +392,28 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         localStream: localStreamRef.current
     };
 };
+
+if (typeof window !== 'undefined') {
+    (window as any).DEBUG_AUDIO_ELEMENTS = () => {
+        console.log('--- DEBUG AUDIO ELEMENTS ---');
+        console.log('LOCAL_STREAM_IDS:', Array.from(LOCAL_STREAM_IDS));
+        console.log('LOCAL_TRACK_IDS:', Array.from(LOCAL_TRACK_IDS));
+        const elements = document.querySelectorAll('audio, video');
+        elements.forEach((el, i) => {
+            const mediaEl = el as HTMLMediaElement;
+            const srcObject = mediaEl.srcObject as MediaStream | null;
+            console.log(`Element ${i} [${mediaEl.tagName}]:`, {
+                src: mediaEl.src,
+                srcObject: srcObject ? { id: srcObject.id, tracks: srcObject.getTracks().map(t => ({ id: t.id, label: t.label, kind: t.kind })) } : null,
+                muted: mediaEl.muted,
+                volume: mediaEl.volume,
+                paused: mediaEl.paused,
+                autoplay: mediaEl.autoplay,
+                error: mediaEl.error,
+                readyState: mediaEl.readyState
+            });
+        });
+        console.log('--- END DEBUG ---');
+    };
+    console.log('[DEBUG] window.DEBUG_AUDIO_ELEMENTS() is available');
+}
