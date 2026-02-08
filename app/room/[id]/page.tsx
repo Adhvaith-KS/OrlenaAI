@@ -124,17 +124,19 @@ export default function RoomPage() {
             const recorderStream = localStream || await navigator.mediaDevices.getUserMedia({ audio: true });
 
             const types = [
-                'audio/webm;codecs=opus',
                 'audio/webm',
+                'audio/opus',
                 'audio/ogg',
                 ''
             ];
             const supportedType = types.find(t => t === '' || MediaRecorder.isTypeSupported(t)) || '';
+            console.log(`[REC] Select recorder mime type: ${supportedType || 'default'}`);
+
             const options = supportedType ? { mimeType: supportedType } : undefined;
-
-            console.log(`[REC] Initializing recorder. Type: ${supportedType || 'default'}`);
-
             const mediaRecorder = new MediaRecorder(recorderStream, options);
+
+            console.log(`[REC] recorder mime type: ${mediaRecorder.mimeType}`);
+
             mediaRecorderRef.current = mediaRecorder;
             audioChunksRef.current = [];
 
@@ -146,8 +148,13 @@ export default function RoomPage() {
 
             mediaRecorder.onstop = () => {
                 console.log('[PTT] recording stopped');
-                const blob = new Blob(audioChunksRef.current, { type: supportedType || 'audio/webm' });
+
+                // Content-Type must be a simple mime type for Sarvam (remove ;codecs=...)
+                const cleanMime = (mediaRecorder.mimeType || 'audio/webm').split(';')[0];
+                const blob = new Blob(audioChunksRef.current, { type: cleanMime });
+
                 console.log(`[PTT] audio blob size: ${blob.size} bytes`);
+                console.log(`[PTT] upload mime type: ${blob.type}`);
 
                 if (blob.size < 1000) {
                     console.warn('[REC] Blob too small, ignoring.');
@@ -157,7 +164,7 @@ export default function RoomPage() {
                 // STT API Call
                 console.log(`[PTT] sending audio to STT`);
                 const formData = new FormData();
-                formData.append('audio', blob);
+                formData.append('audio', blob, `audio.${cleanMime.split('/')[1]}`);
 
                 fetch('/api/stt', { method: 'POST', body: formData })
                     .then(async (res) => {
