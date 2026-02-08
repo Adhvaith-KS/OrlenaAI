@@ -61,7 +61,9 @@ export default function RoomPage() {
         sendProfile,
         sendSpeakingStatus,
         ttsModel,
-        localStream
+        localStream,
+        remoteFlowStatus, // New state from hook
+        sendDataMessage   // New function from hook
     } = useWebRTC(roomId, userId, initialModel);
 
     const translateText = useCallback(async (text: string, source: string, target: string): Promise<string> => {
@@ -163,6 +165,9 @@ export default function RoomPage() {
 
                 // STT API Call
                 console.log(`[PTT] sending audio to STT`);
+                setOrlenaFlowState('receiving');
+                setFlowDirection('me_to_peer');
+                broadcastFlowStatus('receiving'); // Tell peer I am sending to Orlena
                 const formData = new FormData();
                 formData.append('audio', blob, `audio.${cleanMime.split('/')[1]}`);
 
@@ -202,6 +207,57 @@ export default function RoomPage() {
 
     const [isTTSPlaying, setIsTTSPlaying] = useState(false);
 
+    // Orlena Flow States: tracks the translation pipeline visualization
+    type OrlenaFlowState = 'idle' | 'receiving' | 'translating' | 'playing';
+    const [orlenaFlowState, setOrlenaFlowState] = useState<OrlenaFlowState>('idle');
+    const [flowDirection, setFlowDirection] = useState<'me_to_peer' | 'peer_to_me' | null>(null);
+
+    // Sync remote flow status to local UI visualization
+    // Sync remote flow status to local UI visualization
+    useEffect(() => {
+        console.log('[FLOW] Remote status changed:', remoteFlowStatus);
+
+        if (remoteFlowStatus === 'idle') {
+            setOrlenaFlowState('idle');
+            setFlowDirection(null);
+        } else if (remoteFlowStatus === 'receiving') {
+            // Peer is speaking/sending to Orlena
+            setOrlenaFlowState('receiving');
+            setFlowDirection('peer_to_me');
+        } else if (remoteFlowStatus === 'translating') {
+            // Peer is translating. This implies they received a message (from me) and are processing it.
+            // So on my screen: Me -> Orlena (spinning)
+            setOrlenaFlowState('translating');
+            setFlowDirection('me_to_peer');
+        } else if (remoteFlowStatus === 'playing') {
+            // Peer is playing audio (TTS). This implies they are hearing the translation of my message.
+            // So on my screen: Orlena -> Peer (playing)
+            setOrlenaFlowState('playing');
+            setFlowDirection('me_to_peer');
+        }
+    }, [remoteFlowStatus]);
+
+    // Remote is doing something (translating/playing) -> implies flow is coming from them to me
+    // BUT wait:
+    // If remote is 'receiving' (from me), that means *I* am sending.
+    // If remote is 'translating' (locally), that means *I* sent text? No, wait.
+    // Let's stick to the user request:
+    // "when user 1 is waiting for a reply... user 1 is supposed to see the audio coming from user 2 to orlena to user 1"
+
+    // Map remote status:
+    // Peer says 'translating' -> They are translating text I sent? OR they are translating text they spoke?
+    // The flow_status I implemented in useWebRTC is generic.
+
+    // Let's assume we broadcast strictly what *we* are doing to the *audio/text flow*.
+
+    // IF Peer Speaking -> Peer sends 'receiving' (to Orlena)?
+    // Actually, we need to manually trigger these sends.
+
+
+    const broadcastFlowStatus = (status: 'idle' | 'receiving' | 'translating' | 'playing') => {
+        sendDataMessage({ type: 'flow_status', status });
+    };
+
     const playTTS = useCallback(async (text: string, lang: string, gender: Gender = 'neutral', modelId: string = 'bulbul:v3-beta') => {
         try {
             console.log(`[TTS] Requesting audio for: "${text}" in ${lang} with voice gender: ${gender} and model: ${modelId}`);
@@ -227,6 +283,9 @@ export default function RoomPage() {
 
                 audio.onended = () => {
                     setIsTTSPlaying(false);
+                    setOrlenaFlowState('idle');
+                    setFlowDirection(null);
+                    broadcastFlowStatus('idle'); // Tell peer I am done playing
                     URL.revokeObjectURL(url);
                 };
 
@@ -234,10 +293,16 @@ export default function RoomPage() {
             } else {
                 console.error('[TTS] No audio in response:', data);
                 setIsTTSPlaying(false);
+                setOrlenaFlowState('idle');
+                setFlowDirection(null);
+                broadcastFlowStatus('idle');
             }
         } catch (e) {
             console.error('[TTS] Playback failed:', e);
             setIsTTSPlaying(false);
+            setOrlenaFlowState('idle');
+            setFlowDirection(null);
+            broadcastFlowStatus('idle');
         }
     }, []);
 
@@ -254,6 +319,10 @@ export default function RoomPage() {
         const handleIncoming = async () => {
             if (lastTranscript) {
                 if (lastTranscript.sender === 'remote') {
+                    // Set flow direction for Orlena visualization
+                    setOrlenaFlowState('receiving');
+                    setFlowDirection('peer_to_me');
+
                     // Strict Logic as requested:
                     const sourceLang = lastTranscript.language;
 
@@ -280,6 +349,8 @@ export default function RoomPage() {
                         const targetLangName = SUPPORTED_LANGUAGES.find(l => l.code === hearLang)?.label || hearLang;
                         setTranslatingToLang(targetLangName);
                         setIsTranslating(true);
+                        setOrlenaFlowState('translating');
+                        broadcastFlowStatus('translating'); // Tell peer I am translating (meaning Orlena is working on my side)
 
                         const translated = await translateText(lastTranscript.text, srcParam, hearLang);
                         setTranscripts(prev => [...prev, {
@@ -295,8 +366,14 @@ export default function RoomPage() {
                     // Trigger TTS with gender-aware voice
                     // Use hearLang as target for TTS, and remote user's gender for voice
                     if (!finalText.startsWith('[')) { // Avoid TTSing error messages
+                        setOrlenaFlowState('playing');
+                        broadcastFlowStatus('playing'); // Tell peer I am playing the audio
                         const voiceGender = remoteProfile?.gender || 'neutral';
                         playTTS(finalText, hearLang, voiceGender as Gender, ttsModel);
+                    } else {
+                        setOrlenaFlowState('idle');
+                        setFlowDirection(null);
+                        broadcastFlowStatus('idle'); // Tell peer I am done
                     }
                 } else {
                     // It's 'me'. Show original.
@@ -424,53 +501,120 @@ export default function RoomPage() {
             )}
 
             <div className="flex-1 flex flex-col items-center justify-center p-4 gap-8">
-                {/* Participants Grid */}
-                <div className="grid grid-cols-2 gap-4 w-full max-w-2xl">
+                {/* Participants Flow: Me → Orlena → Peer */}
+                <div className="flex items-center justify-center gap-2 w-full max-w-4xl">
                     {/* Me */}
-                    <div className="bg-zinc-900 rounded-2xl aspect-square flex flex-col items-center justify-center border border-zinc-800 relative overflow-hidden group">
-                        <div className="w-24 h-24 rounded-full bg-indigo-600/20 flex items-center justify-center text-4xl mb-4 ring-4 ring-indigo-600/10">
-                            {profile.avatar}
+                    <div className={`bg-zinc-900 rounded-2xl p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-300 min-w-[180px] ${isTalking ? 'border-indigo-500 shadow-[0_0_30px_rgba(99,102,241,0.3)]' : 'border-zinc-800'}`}>
+                        <div className="relative w-20 h-20 mb-3">
+                            {isTalking && (
+                                <>
+                                    <div className="absolute inset-0 rounded-full border-2 border-indigo-500/40 waveform-ring" style={{ animationDelay: '0s' }} />
+                                    <div className="absolute inset-0 rounded-full border-2 border-indigo-500/30 waveform-ring" style={{ animationDelay: '0.3s' }} />
+                                </>
+                            )}
+                            <div className={`w-full h-full rounded-full flex items-center justify-center text-3xl transition-all ${isTalking ? 'bg-indigo-500/20 ring-4 ring-indigo-500/30' : 'bg-indigo-600/20 ring-4 ring-indigo-600/10'}`}>
+                                {profile.avatar}
+                            </div>
                         </div>
-                        <p className="text-white font-bold text-lg">{profile.name || 'You'}</p>
-                        <p className="text-zinc-500 text-xs uppercase tracking-widest mt-1">ME</p>
+                        <p className={`font-bold text-base transition-colors ${isTalking ? 'text-indigo-400' : 'text-white'}`}>{profile.name || 'You'}</p>
+                        <div className="h-5 flex items-center justify-center">
+                            {isTTSPlaying ? (
+                                <p className="text-emerald-400 text-xs font-medium animate-pulse">🔊 Hearing translation</p>
+                            ) : isTalking ? (
+                                <p className="text-indigo-400 text-xs font-medium animate-pulse">🎙️ Speaking...</p>
+                            ) : (
+                                <p className="text-zinc-500 text-xs uppercase tracking-widest">ME</p>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Arrow: Me ↔ Orlena */}
+                    <div className={`flex flex-col items-center gap-1 transition-all duration-300 ${((orlenaFlowState === 'receiving' && flowDirection === 'me_to_peer') || (orlenaFlowState === 'playing' && flowDirection === 'peer_to_me')) ? 'opacity-100' : 'opacity-30'}`}>
+                        <div className={`text-2xl transition-transform duration-300 ${(orlenaFlowState === 'receiving' && flowDirection === 'me_to_peer') ? 'animate-pulse text-indigo-400 translate-x-1' :
+                            (orlenaFlowState === 'playing' && flowDirection === 'peer_to_me') ? 'animate-pulse text-emerald-400 -translate-x-1 rotate-180' :
+                                'text-zinc-600'
+                            }`}>
+                            →
+                        </div>
+                        {(orlenaFlowState === 'receiving' && flowDirection === 'me_to_peer') && (
+                            <p className="text-[10px] text-indigo-400 animate-pulse whitespace-nowrap">sending...</p>
+                        )}
+                        {(orlenaFlowState === 'playing' && flowDirection === 'peer_to_me') && (
+                            <p className="text-[10px] text-emerald-400 animate-pulse whitespace-nowrap">hearing...</p>
+                        )}
+                    </div>
+
+                    {/* Orlena - The Translator */}
+                    <div className={`bg-gradient-to-br from-zinc-900 to-zinc-950 rounded-2xl p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-500 min-w-[200px] ${orlenaFlowState === 'translating' ? 'border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] scale-105' : orlenaFlowState !== 'idle' ? 'border-indigo-500/50 shadow-[0_0_20px_rgba(99,102,241,0.2)]' : 'border-zinc-800'}`}>
+                        <div className="relative w-20 h-20 mb-3">
+                            {orlenaFlowState === 'translating' && (
+                                <>
+                                    <div className="absolute inset-0 rounded-full border-2 border-purple-500/50 waveform-ring" style={{ animationDelay: '0s' }} />
+                                    <div className="absolute inset-0 rounded-full border-2 border-purple-500/30 waveform-ring" style={{ animationDelay: '0.4s' }} />
+                                    <div className="absolute inset-0 rounded-full border-2 border-purple-500/20 waveform-ring" style={{ animationDelay: '0.8s' }} />
+                                </>
+                            )}
+                            <div className={`w-full h-full rounded-full flex items-center justify-center text-3xl transition-all ${orlenaFlowState === 'translating' ? 'bg-purple-500/30 ring-4 ring-purple-500/40' : orlenaFlowState !== 'idle' ? 'bg-indigo-500/20 ring-4 ring-indigo-500/20' : 'bg-zinc-800 ring-4 ring-zinc-700/30'}`}>
+                                <span className={`transition-transform duration-500 ${orlenaFlowState === 'translating' ? 'animate-spin' : ''}`}>✨</span>
+                            </div>
+                        </div>
+                        <p className={`font-bold text-base bg-clip-text text-transparent bg-gradient-to-r transition-all ${orlenaFlowState === 'translating' ? 'from-purple-400 to-pink-400' : orlenaFlowState !== 'idle' ? 'from-indigo-400 to-purple-400' : 'from-zinc-400 to-zinc-500'}`}>
+                            Orlena AI
+                        </p>
+                        <div className="h-6 flex items-center justify-center">
+                            {orlenaFlowState === 'translating' ? (
+                                <p className="text-purple-400 text-xs font-medium animate-pulse">✨ Translating...</p>
+                            ) : orlenaFlowState === 'receiving' ? (
+                                <p className="text-indigo-400 text-xs animate-pulse">Receiving audio...</p>
+                            ) : orlenaFlowState === 'playing' ? (
+                                <p className="text-emerald-400 text-xs animate-pulse">Playing to {flowDirection === 'me_to_peer' ? 'peer' : 'you'}...</p>
+                            ) : (
+                                <p className="text-zinc-600 text-xs uppercase tracking-widest">TRANSLATOR</p>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Arrow: Orlena → Peer */}
+                    <div className={`flex flex-col items-center gap-1 transition-all duration-300 ${(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') || (orlenaFlowState === 'receiving' && flowDirection === 'peer_to_me') ? 'opacity-100' : 'opacity-30'}`}>
+                        <div className={`text-2xl transition-transform duration-300 ${(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') ? 'animate-pulse text-emerald-400 translate-x-1' : (orlenaFlowState === 'receiving' && flowDirection === 'peer_to_me') ? 'animate-pulse text-indigo-400 -translate-x-1 rotate-180' : 'text-zinc-600'}`}>
+                            →
+                        </div>
+                        {(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') && (
+                            <p className="text-[10px] text-emerald-400 animate-pulse whitespace-nowrap">playing...</p>
+                        )}
                     </div>
 
                     {/* Peer */}
-                    <div className={`bg-zinc-900 rounded-2xl aspect-square flex flex-col items-center justify-center border relative transition-all duration-300 ${isRemoteSpeaking || isTTSPlaying ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.3)]' : 'border-zinc-800'}`}>
+                    <div className={`bg-zinc-900 rounded-2xl p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-300 min-w-[180px] ${isPeerSpeaking || isTTSPlaying ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.3)]' : 'border-zinc-800'}`}>
                         {participants.length > 1 ? (
                             <>
-                                <div className="relative w-24 h-24 mb-4">
-                                    {/* Waveform visualization rings */}
-                                    {(isRemoteSpeaking || isTTSPlaying) && (
+                                <div className="relative w-20 h-20 mb-3">
+                                    {(isPeerSpeaking || isTTSPlaying) && (
                                         <>
                                             <div className="absolute inset-0 rounded-full border-2 border-emerald-500/40 waveform-ring" style={{ animationDelay: '0s' }} />
                                             <div className="absolute inset-0 rounded-full border-2 border-emerald-500/30 waveform-ring" style={{ animationDelay: '0.3s' }} />
-                                            <div className="absolute inset-0 rounded-full border-2 border-emerald-500/20 waveform-ring" style={{ animationDelay: '0.6s' }} />
                                         </>
                                     )}
-
-                                    <div className={`w-full h-full rounded-full flex items-center justify-center text-4xl transition-all ${isRemoteSpeaking || isTTSPlaying ? 'bg-emerald-500/20 text-white' : 'bg-zinc-800 text-zinc-500'}`}>
-                                        {remoteProfile ? remoteProfile.avatar : (isRemoteSpeaking || isTTSPlaying ? '🗣️' : '👤')}
+                                    <div className={`w-full h-full rounded-full flex items-center justify-center text-3xl transition-all ${isPeerSpeaking || isTTSPlaying ? 'bg-emerald-500/20 ring-4 ring-emerald-500/30' : 'bg-zinc-800 ring-4 ring-zinc-700/30'}`}>
+                                        {remoteProfile ? remoteProfile.avatar : (isPeerSpeaking ? '🗣️' : '👤')}
                                     </div>
                                 </div>
-                                <p className={`font-bold text-lg transition-colors ${isRemoteSpeaking || isTTSPlaying ? 'text-emerald-400' : 'text-zinc-400'}`}>
-                                    {remoteProfile ? remoteProfile.name : (isTTSPlaying ? 'Orlena AI' : isRemoteSpeaking ? 'Speaking...' : 'Peer')}
+                                <p className={`font-bold text-base transition-colors ${isPeerSpeaking || isTTSPlaying ? 'text-emerald-400' : 'text-zinc-400'}`}>
+                                    {remoteProfile ? remoteProfile.name : 'Peer'}
                                 </p>
                                 <div className="h-5 flex items-center justify-center">
-                                    {isTTSPlaying ? (
-                                        <p className="text-emerald-500/70 text-xs animate-pulse">Translating...</p>
-                                    ) : isPeerSpeaking ? (
-                                        <p className="text-indigo-400 text-xs font-medium animate-pulse">Speaking, please wait for the translation</p>
-                                    ) : isRemoteSpeaking ? (
-                                        <p className="text-emerald-500/70 text-xs animate-pulse">Speaking...</p>
-                                    ) : null}
+                                    {isPeerSpeaking ? (
+                                        <p className="text-emerald-400 text-xs animate-pulse">Speaking...</p>
+                                    ) : (
+                                        <p className="text-zinc-500 text-xs uppercase tracking-widest">PEER</p>
+                                    )}
                                 </div>
-                                {isConnected && <span className="absolute top-4 right-4 w-3 h-3 bg-emerald-500 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.5)]" title="Connected"></span>}
+                                {isConnected && <span className="absolute top-3 right-3 w-2.5 h-2.5 bg-emerald-500 rounded-full shadow-[0_0_10px_rgba(16,185,129,0.5)]" title="Connected"></span>}
                             </>
                         ) : (
-                            <div className="text-center p-6 space-y-4 opacity-50">
-                                <div className="w-16 h-16 rounded-full bg-zinc-800 mx-auto animate-pulse" />
-                                <p className="text-zinc-500 text-sm">Waiting for peer...</p>
+                            <div className="text-center p-4 space-y-3 opacity-50">
+                                <div className="w-14 h-14 rounded-full bg-zinc-800 mx-auto animate-pulse" />
+                                <p className="text-zinc-500 text-xs">Waiting for peer...</p>
                             </div>
                         )}
                     </div>

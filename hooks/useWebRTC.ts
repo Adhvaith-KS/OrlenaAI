@@ -79,6 +79,7 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
     const [lastTranscript, setLastTranscript] = useState<{ text: string; sender: 'me' | 'remote'; language?: string } | null>(null);
     const [remoteProfile, setRemoteProfile] = useState<{ name: string; avatar: string; gender?: string } | null>(null);
     const [ttsModel, setTtsModel] = useState<string>(initialModel || 'bulbul:v3-beta');
+    const [remoteFlowStatus, setRemoteFlowStatus] = useState<'idle' | 'receiving' | 'translating' | 'playing'>('idle');
     const localStreamRef = useRef<MediaStream | null>(null);
     const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -261,6 +262,8 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
                     setLastTranscript({ text: parsed.text, sender: 'remote', language: parsed.language });
                 } else if (parsed.type === 'speaking_status') {
                     setIsPeerSpeaking(parsed.isSpeaking);
+                } else if (parsed.type === 'flow_status') {
+                    setRemoteFlowStatus(parsed.status);
                 }
             } catch (e) {
                 console.error('Error parsing text message', e);
@@ -389,7 +392,13 @@ export const useWebRTC = (roomId: string, userId: string, initialModel?: string)
         sendProfile,
         sendSpeakingStatus,
         ttsModel,
-        localStream: localStreamRef.current
+        localStream: localStreamRef.current,
+        remoteFlowStatus,
+        sendDataMessage: (msg: any) => {
+            if (dataChannel.current && dataChannel.current.readyState === 'open') {
+                dataChannel.current.send(JSON.stringify(msg));
+            }
+        }
     };
 };
 
