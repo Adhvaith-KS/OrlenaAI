@@ -18,11 +18,38 @@ const syne = Syne({
 });
 
 export const metadata: Metadata = {
-  title: "Orlena AI",
-  description: "Your universal translation layer for real conversations.",
+  title: "Orlena AI | Universal Translation Layer",
+  description: "Real-time, private, and universal translation for seamless global conversations.",
+  metadataBase: new URL('https://orlena.ai'), // Replace with actual URL if different
   icons: {
-    icon: "/icon.png",
-    apple: "/icon.png",
+    icon: [
+      { url: "/icon.png", type: "image/png" },
+    ],
+    apple: [
+      { url: "/icon.png", type: "image/png" },
+    ],
+  },
+  openGraph: {
+    title: "Orlena AI | Universal Translation Layer",
+    description: "Real-time, private, and universal translation for seamless global conversations.",
+    url: "https://orlena.ai",
+    siteName: "Orlena AI",
+    images: [
+      {
+        url: "/icon.png",
+        width: 512,
+        height: 512,
+        alt: "Orlena AI Logo",
+      },
+    ],
+    locale: "en_US",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Orlena AI | Universal Translation Layer",
+    description: "Real-time, private, and universal translation for seamless global conversations.",
+    images: ["/icon.png"],
   },
 };
 
