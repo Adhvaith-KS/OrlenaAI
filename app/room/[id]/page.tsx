@@ -531,9 +531,9 @@ export default function RoomPage() {
 
             <div className="flex-1 flex flex-col items-center justify-center p-4 gap-8">
                 {/* Participants Flow: Me → Orlena → Peer */}
-                <div className="flex items-center justify-center gap-2 w-full max-w-4xl">
+                <div className="flex flex-col md:flex-row items-center justify-center gap-2 md:gap-4 w-full max-w-4xl px-2">
                     {/* Me */}
-                    <div className={`bg-zinc-900 rounded-2xl p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-300 min-w-[180px] ${isTalking ? 'border-indigo-500 shadow-[0_0_30px_rgba(99,102,241,0.3)]' : 'border-zinc-800'}`}>
+                    <div className={`bg-zinc-900 rounded-2xl p-4 md:p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-300 w-full md:w-auto md:min-w-[180px] ${isTalking ? 'border-indigo-500 shadow-[0_0_30px_rgba(99,102,241,0.3)]' : 'border-zinc-800'}`}>
                         <div className="relative w-20 h-20 mb-3">
                             {isTalking && (
                                 <>
@@ -559,8 +559,8 @@ export default function RoomPage() {
 
                     {/* Arrow: Me ↔ Orlena */}
                     <div className={`flex flex-col items-center gap-1 transition-all duration-300 ${((orlenaFlowState === 'receiving' && flowDirection === 'me_to_peer') || (orlenaFlowState === 'playing' && flowDirection === 'peer_to_me')) ? 'opacity-100' : 'opacity-30'}`}>
-                        <div className={`text-2xl transition-transform duration-300 ${(orlenaFlowState === 'receiving' && flowDirection === 'me_to_peer') ? 'animate-pulse text-indigo-400 translate-x-1' :
-                            (orlenaFlowState === 'playing' && flowDirection === 'peer_to_me') ? 'animate-pulse text-emerald-400 -translate-x-1 rotate-180' :
+                        <div className={`text-2xl transition-transform duration-300 rotate-90 md:rotate-0 ${(orlenaFlowState === 'receiving' && flowDirection === 'me_to_peer') ? 'animate-pulse text-indigo-400 md:translate-x-1 translate-y-1 md:translate-y-0' :
+                            (orlenaFlowState === 'playing' && flowDirection === 'peer_to_me') ? 'animate-pulse text-emerald-400 md:-translate-x-1 -translate-y-1 md:translate-y-0 rotate-[270deg] md:rotate-180' :
                                 'text-zinc-600'
                             }`}>
                             →
@@ -574,7 +574,7 @@ export default function RoomPage() {
                     </div>
 
                     {/* Orlena - The Translator */}
-                    <div className={`bg-gradient-to-br from-zinc-900 to-zinc-950 rounded-2xl p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-500 min-w-[200px] ${orlenaFlowState === 'translating' ? 'border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] scale-105' : orlenaFlowState !== 'idle' ? 'border-indigo-500/50 shadow-[0_0_20px_rgba(99,102,241,0.2)]' : 'border-zinc-800'}`}>
+                    <div className={`bg-gradient-to-br from-zinc-900 to-zinc-950 rounded-2xl p-4 md:p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-500 w-full md:w-auto md:min-w-[200px] ${orlenaFlowState === 'translating' ? 'border-purple-500 shadow-[0_0_40px_rgba(168,85,247,0.4)] scale-105' : orlenaFlowState !== 'idle' ? 'border-indigo-500/50 shadow-[0_0_20px_rgba(99,102,241,0.2)]' : 'border-zinc-800'}`}>
                         <div className="relative w-20 h-20 mb-3">
                             {orlenaFlowState === 'translating' && (
                                 <>
@@ -605,7 +605,7 @@ export default function RoomPage() {
 
                     {/* Arrow: Orlena → Peer */}
                     <div className={`flex flex-col items-center gap-1 transition-all duration-300 ${(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') || (orlenaFlowState === 'receiving' && flowDirection === 'peer_to_me') ? 'opacity-100' : 'opacity-30'}`}>
-                        <div className={`text-2xl transition-transform duration-300 ${(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') ? 'animate-pulse text-emerald-400 translate-x-1' : (orlenaFlowState === 'receiving' && flowDirection === 'peer_to_me') ? 'animate-pulse text-indigo-400 -translate-x-1 rotate-180' : 'text-zinc-600'}`}>
+                        <div className={`text-2xl transition-transform duration-300 rotate-90 md:rotate-0 ${(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') ? 'animate-pulse text-emerald-400 md:translate-x-1 translate-y-1 md:translate-y-0' : (orlenaFlowState === 'receiving' && flowDirection === 'peer_to_me') ? 'animate-pulse text-indigo-400 rotate-[270deg] md:rotate-180 md:-translate-x-1 -translate-y-1 md:translate-y-0' : 'text-zinc-600'}`}>
                             →
                         </div>
                         {(orlenaFlowState === 'playing' && flowDirection === 'me_to_peer') && (
@@ -614,7 +614,7 @@ export default function RoomPage() {
                     </div>
 
                     {/* Peer */}
-                    <div className={`bg-zinc-900 rounded-2xl p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-300 min-w-[180px] ${isPeerSpeaking || isTTSPlaying ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.3)]' : 'border-zinc-800'}`}>
+                    <div className={`bg-zinc-900 rounded-2xl p-4 md:p-6 flex flex-col items-center justify-center border relative overflow-hidden transition-all duration-300 w-full md:w-auto md:min-w-[180px] ${isPeerSpeaking || isTTSPlaying ? 'border-emerald-500 shadow-[0_0_30px_rgba(16,185,129,0.3)]' : 'border-zinc-800'}`}>
                         {participants.length > 1 ? (
                             <>
                                 <div className="relative w-20 h-20 mb-3">
